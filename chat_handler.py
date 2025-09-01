@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-from openai import OpenAI
+from openai import OpenAI, DefaultHttpxClient
+import httpx
 import chromadb
 from chromadb.config import Settings
 import os
@@ -9,6 +10,8 @@ import json
 import tiktoken
 import logging
 from dotenv import load_dotenv
+import time
+import random
 
 # Load environment variables
 load_dotenv()
@@ -63,53 +66,139 @@ Key instructions:
 Format your citations as: [Song Title - Artist] at the end of relevant sentences."""
 
     def _get_openai_client(self):
-        """Get or initialize the OpenAI client lazily"""
-        # Always check for the current API key to handle key changes
+        """Get or initialize the OpenAI client with Railway-optimized settings"""
+        # Always check for the current API key
         current_api_key = os.getenv('OPENAI_API_KEY')
         
-        # Check if we need to reinitialize (key changed or first time)
-        if not self._openai_initialized or (self._openai_client and hasattr(self._openai_client, 'api_key') and self._openai_client.api_key != current_api_key):
-            self._openai_initialized = True
+        # Fix: Always retry if client is None or key changed
+        if not self._openai_client or not self._openai_initialized or \
+           (self._openai_client and hasattr(self._openai_client, 'api_key') and \
+            self._openai_client.api_key != current_api_key):
             
             if not current_api_key:
                 logger.error("OPENAI_API_KEY not found in environment variables")
                 logger.error(f"Available env vars: {list(os.environ.keys())}")
                 self._openai_client = None
-            else:
+                self._openai_initialized = True
+                return None
+            
+            # Try to initialize with retries for Railway connectivity issues
+            max_retries = 3
+            retry_delay = 1
+            
+            for attempt in range(max_retries):
                 try:
-                    self._openai_client = OpenAI(api_key=current_api_key)
-                    logger.info(f"OpenAI client initialized with key starting with: {current_api_key[:10]}...")
+                    # Create custom HTTP client with Railway-optimized settings
+                    http_client = DefaultHttpxClient(
+                        timeout=httpx.Timeout(
+                            timeout=60.0,  # Total timeout
+                            connect=15.0,  # Connection timeout (longer for Railway)
+                            read=30.0,     # Read timeout
+                            write=10.0,    # Write timeout
+                            pool=5.0       # Pool timeout
+                        ),
+                        limits=httpx.Limits(
+                            max_connections=10,
+                            max_keepalive_connections=5,
+                            keepalive_expiry=30
+                        ),
+                        # Add headers to identify Railway traffic
+                        headers={
+                            'User-Agent': 'Drake-Discography-Railway/1.0',
+                            'X-Platform': 'Railway'
+                        },
+                        verify=True
+                    )
+                    
+                    self._openai_client = OpenAI(
+                        api_key=current_api_key,
+                        http_client=http_client,
+                        max_retries=2  # OpenAI's built-in retry
+                    )
+                    
+                    # Test the connection
+                    test_response = self._openai_client.models.list()
+                    logger.info(f"OpenAI client initialized successfully on attempt {attempt + 1}")
+                    logger.info(f"Using API key: {current_api_key[:10]}...")
+                    self._openai_initialized = True
+                    return self._openai_client
+                    
+                except httpx.TimeoutException as e:
+                    logger.warning(f"Timeout connecting to OpenAI (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error("Failed to connect to OpenAI after all retries (timeout)")
+                        self._openai_client = None
+                        
+                except httpx.ConnectError as e:
+                    logger.warning(f"Connection error to OpenAI (attempt {attempt + 1}/{max_retries}): {e}")
+                    logger.info("This may be due to Railway's shared IPs being rate-limited by OpenAI")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        logger.error("Failed to connect to OpenAI after all retries (connection error)")
+                        self._openai_client = None
+                        
                 except Exception as e:
-                    logger.error(f"Failed to create OpenAI client: {e}")
-                    self._openai_client = None
+                    logger.error(f"Unexpected error initializing OpenAI client (attempt {attempt + 1}/{max_retries}): {e}")
+                    logger.error(f"Error type: {type(e).__name__}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        self._openai_client = None
+            
+            self._openai_initialized = True
         
         return self._openai_client
     
     def get_embedding(self, text: str) -> List[float]:
-        """Get embedding for a text using OpenAI"""
+        """Get embedding for a text using OpenAI with retry logic"""
         client = self._get_openai_client()
         if not client:
-            logger.error("OpenAI client not available. Check your API key.")
+            logger.error("OpenAI client not available after retries")
             return None
-            
-        try:
-            response = client.embeddings.create(
-                model="text-embedding-3-large",
-                input=text,
-                encoding_format="float"
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Error getting embedding: {e}")
-            return None
+        
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                response = client.embeddings.create(
+                    model="text-embedding-3-large",
+                    input=text,
+                    encoding_format="float"
+                )
+                return response.data[0].embedding
+                
+            except httpx.TimeoutException as e:
+                logger.warning(f"Embedding timeout (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay + random.uniform(0, 0.5))  # Add jitter
+                    retry_delay *= 2
+                else:
+                    logger.error("Failed to get embedding after all retries")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Error getting embedding (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay + random.uniform(0, 0.5))
+                    retry_delay *= 2
+                else:
+                    return None
 
     def search_lyrics(self, query: str, n_results: int = 10) -> Dict:
         """Search for relevant lyrics chunks using semantic similarity"""
         query_embedding = self.get_embedding(query)
         
         if not query_embedding:
-            error_msg = "Failed to process query. Please check if the OpenAI API key is configured correctly."
+            error_msg = "Failed to get embeddings from OpenAI. This may be due to Railway connectivity issues with OpenAI's servers."
             logger.error(error_msg)
+            logger.info("Tip: Railway's shared IPs may be rate-limited by OpenAI. Try again in a few moments.")
             return {"error": error_msg}
         
         results = self.collection.query(
@@ -180,47 +269,87 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
             for msg in conversation_history[-4:]:  # Keep last 4 exchanges
                 messages.append(msg)
         
-        try:
-            client = self._get_openai_client()
-            if not client:
-                logger.error("OpenAI client not initialized")
-                return "Error: OpenAI API is not configured properly. Please check your API key."
-                
-            # Try latest model first
+        client = self._get_openai_client()
+        if not client:
+            logger.error("OpenAI client not initialized after retries")
+            return "Error: Unable to connect to OpenAI. Railway may have connectivity issues with OpenAI's servers. Please try again in a few moments."
+        
+        # Try with retries for Railway connectivity issues
+        max_retries = 3
+        retry_delay = 1
+        last_error = None
+        
+        for attempt in range(max_retries):
             try:
-                response = client.chat.completions.create(
-                    model="gpt-4-turbo-2024-04-09",  # Latest available GPT-4 model
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=1000,
-                    stream=False
-                )
-            except Exception as e1:
-                logger.warning(f"Failed with gpt-4-turbo: {e1}")
-                # Fallback to GPT-4o if newer model not available
+                # Try latest model first
                 try:
                     response = client.chat.completions.create(
-                        model="gpt-4o",
+                        model="gpt-4-turbo-2024-04-09",  # Latest available GPT-4 model
                         messages=messages,
                         temperature=0.7,
                         max_tokens=1000,
                         stream=False
                     )
-                except Exception as e2:
-                    logger.warning(f"Failed with gpt-4o: {e2}")
-                    # Final fallback to GPT-3.5
-                    response = client.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=messages,
-                        temperature=0.7,
-                        max_tokens=1000,
-                        stream=False
-                    )
-            
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            return f"Error generating response: {str(e)}. Please ensure your OpenAI API key is valid."
+                    return response.choices[0].message.content
+                    
+                except Exception as e1:
+                    if attempt == 0:  # Only try fallback models on first attempt
+                        logger.warning(f"Failed with gpt-4-turbo: {e1}")
+                        # Fallback to GPT-4o if newer model not available
+                        try:
+                            response = client.chat.completions.create(
+                                model="gpt-4o",
+                                messages=messages,
+                                temperature=0.7,
+                                max_tokens=1000,
+                                stream=False
+                            )
+                            return response.choices[0].message.content
+                            
+                        except Exception as e2:
+                            logger.warning(f"Failed with gpt-4o: {e2}")
+                            # Final fallback to GPT-3.5
+                            response = client.chat.completions.create(
+                                model="gpt-3.5-turbo",
+                                messages=messages,
+                                temperature=0.7,
+                                max_tokens=1000,
+                                stream=False
+                            )
+                            return response.choices[0].message.content
+                    else:
+                        raise  # Re-raise to trigger retry logic
+                        
+            except httpx.TimeoutException as e:
+                last_error = e
+                logger.warning(f"Chat completion timeout (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay + random.uniform(0, 0.5))
+                    retry_delay *= 2
+                    
+            except httpx.ConnectError as e:
+                last_error = e
+                logger.warning(f"Connection error during chat (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.info("Railway's shared IPs may be experiencing rate limiting from OpenAI")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay + random.uniform(0, 0.5))
+                    retry_delay *= 2
+                    
+            except Exception as e:
+                last_error = e
+                logger.error(f"Unexpected error during chat (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay + random.uniform(0, 0.5))
+                    retry_delay *= 2
+        
+        # All retries failed
+        logger.error(f"Failed to generate response after {max_retries} attempts")
+        if isinstance(last_error, httpx.TimeoutException):
+            return "Error: Request timed out. Railway is having trouble connecting to OpenAI. Please try again."
+        elif isinstance(last_error, httpx.ConnectError):
+            return "Error: Cannot connect to OpenAI. Railway's servers may be temporarily blocked. Please try again in a few moments."
+        else:
+            return f"Error: Unable to generate response. {str(last_error) if last_error else 'Unknown error'}"
 
     def chat(self, query: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
         """Main chat function that orchestrates search and response generation"""

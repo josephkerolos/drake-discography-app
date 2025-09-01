@@ -271,28 +271,47 @@ def health_check():
         'secret_key_set': bool(os.getenv('SECRET_KEY'))
     }
     
-    # Test OpenAI connection
+    # Test OpenAI connection with detailed diagnostics
     try:
         handler = get_chat_handler()
         client = handler._get_openai_client()
         if client:
-            # Try a simple API call
-            test_response = client.models.list()
-            health_status['openai'] = {
-                'status': 'connected',
-                'client_initialized': True,
-                'test_call': 'success'
-            }
+            # Try a simple API call with timing
+            import time
+            start_time = time.time()
+            try:
+                test_response = client.models.list()
+                response_time = time.time() - start_time
+                health_status['openai'] = {
+                    'status': 'connected',
+                    'client_initialized': True,
+                    'test_call': 'success',
+                    'response_time_seconds': round(response_time, 2),
+                    'platform': 'Railway deployment'
+                }
+            except Exception as api_error:
+                response_time = time.time() - start_time
+                error_type = type(api_error).__name__
+                health_status['openai'] = {
+                    'status': 'api_error',
+                    'client_initialized': True,
+                    'error': str(api_error),
+                    'error_type': error_type,
+                    'response_time_seconds': round(response_time, 2),
+                    'note': 'Railway may have connectivity issues with OpenAI'
+                }
         else:
             health_status['openai'] = {
                 'status': 'failed',
                 'client_initialized': False,
-                'error': 'Client could not be initialized'
+                'error': 'Client could not be initialized after retries',
+                'note': 'This is often due to Railway shared IPs being rate-limited by OpenAI'
             }
     except Exception as e:
         health_status['openai'] = {
             'status': 'error',
-            'error': str(e)
+            'error': str(e),
+            'error_type': type(e).__name__
         }
     
     # Check database
