@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 
-import openai
+from openai import OpenAI
 import chromadb
 from chromadb.config import Settings
 import os
 from typing import List, Dict, Optional
 import json
 import tiktoken
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
-    print("Warning: OPENAI_API_KEY not set. Chat features will be disabled.")
-    OPENAI_API_KEY = "dummy_key_for_initialization"
-openai.api_key = OPENAI_API_KEY
+    logger.warning("OPENAI_API_KEY not set. Chat features will be disabled.")
+    # Initialize with None to handle gracefully
+    openai_client = None
+else:
+    try:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        # Test the API key with a simple request
+        test_response = openai_client.models.list()
+        logger.info("OpenAI client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenAI client: {e}")
+        openai_client = None
 
 # ChromaDB setup
 CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), 'chroma_db')
@@ -58,15 +72,19 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
 
     def get_embedding(self, text: str) -> List[float]:
         """Get embedding for a text using OpenAI"""
+        if not openai_client:
+            logger.error("OpenAI client not initialized. Check your API key.")
+            return None
+            
         try:
-            response = openai.embeddings.create(
+            response = openai_client.embeddings.create(
                 model="text-embedding-3-large",
                 input=text,
                 encoding_format="float"
             )
             return response.data[0].embedding
         except Exception as e:
-            print(f"Error getting embedding: {e}")
+            logger.error(f"Error getting embedding: {e}")
             return None
 
     def search_lyrics(self, query: str, n_results: int = 10) -> Dict:
@@ -74,7 +92,9 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
         query_embedding = self.get_embedding(query)
         
         if not query_embedding:
-            return {"error": "Failed to process query"}
+            error_msg = "Failed to process query. Please check if the OpenAI API key is configured correctly."
+            logger.error(error_msg)
+            return {"error": error_msg}
         
         results = self.collection.query(
             query_embeddings=[query_embedding],
@@ -145,39 +165,45 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 messages.append(msg)
         
         try:
+            if not openai_client:
+                logger.error("OpenAI client not initialized")
+                return "Error: OpenAI API is not configured properly. Please check your API key."
+                
             # Try latest model first
             try:
-                response = openai.chat.completions.create(
+                response = openai_client.chat.completions.create(
                     model="gpt-4-turbo-2024-04-09",  # Latest available GPT-4 model
                     messages=messages,
                     temperature=0.7,
                     max_tokens=1000,
                     stream=False
                 )
-            except:
+            except Exception as e1:
+                logger.warning(f"Failed with gpt-4-turbo: {e1}")
                 # Fallback to GPT-4o if newer model not available
-                response = openai.chat.completions.create(
-                    model="gpt-4o",
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=1000,
-                    stream=False
-                )
+                try:
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=1000,
+                        stream=False
+                    )
+                except Exception as e2:
+                    logger.warning(f"Failed with gpt-4o: {e2}")
+                    # Final fallback to GPT-3.5
+                    response = openai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=1000,
+                        stream=False
+                    )
             
             return response.choices[0].message.content
         except Exception as e:
-            # Final fallback to GPT-3.5
-            try:
-                response = openai.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=1000,
-                    stream=False
-                )
-                return response.choices[0].message.content
-            except Exception as fallback_error:
-                return f"Error generating response: {str(e)}"
+            logger.error(f"Error generating response: {e}")
+            return f"Error generating response: {str(e)}. Please ensure your OpenAI API key is valid."
 
     def chat(self, query: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
         """Main chat function that orchestrates search and response generation"""

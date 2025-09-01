@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import sqlite3
-import openai
+from openai import OpenAI
 import chromadb
 from chromadb.config import Settings
 import os
@@ -10,13 +10,27 @@ import time
 import re
 from typing import List, Dict
 import tiktoken
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
-    print("Warning: OPENAI_API_KEY not set. Please set it in Railway environment variables.")
+    logger.error("OPENAI_API_KEY not set. Please set it in environment variables.")
     sys.exit(1)
-openai.api_key = OPENAI_API_KEY
+
+try:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    # Test the API key with a simple request
+    test_response = openai_client.models.list()
+    logger.info("OpenAI client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize OpenAI client: {e}")
+    logger.error("Please check your OpenAI API key")
+    sys.exit(1)
 
 # Initialize ChromaDB
 CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), 'chroma_db')
@@ -85,27 +99,27 @@ def chunk_lyrics(text: str, song_title: str, max_lines: int = 8) -> List[Dict]:
 def get_embedding(text: str, model: str = "text-embedding-3-large") -> List[float]:
     """Get embedding from OpenAI API"""
     try:
-        response = openai.embeddings.create(
+        response = openai_client.embeddings.create(
             model=model,
             input=text,
             encoding_format="float"
         )
         return response.data[0].embedding
     except Exception as e:
-        print(f"Error getting embedding: {e}")
+        logger.error(f"Error getting embedding: {e}")
         return None
 
 def batch_get_embeddings(texts: List[str], model: str = "text-embedding-3-large") -> List[List[float]]:
     """Get embeddings for multiple texts in batch"""
     try:
-        response = openai.embeddings.create(
+        response = openai_client.embeddings.create(
             model=model,
             input=texts,
             encoding_format="float"
         )
         return [item.embedding for item in response.data]
     except Exception as e:
-        print(f"Error getting batch embeddings: {e}")
+        logger.error(f"Error getting batch embeddings: {e}")
         return [None] * len(texts)
 
 def vectorize_database():
