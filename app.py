@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, session
 import sqlite3
 import os
+from dotenv import load_dotenv
 from math import ceil
 import requests
 from bs4 import BeautifulSoup
@@ -8,6 +9,10 @@ from datetime import datetime
 import time
 import re
 import secrets
+
+# Load environment variables from .env file
+load_dotenv()
+
 from chat_handler import get_chat_handler
 
 app = Flask(__name__)
@@ -243,6 +248,95 @@ def vectorize_status():
         })
     except Exception as e:
         return jsonify({'error': str(e), 'status': 'error'}), 500
+
+@app.route('/api/health')
+def health_check():
+    """Health check endpoint to debug environment variables and API configuration"""
+    health_status = {
+        'status': 'checking',
+        'environment': {},
+        'openai': {},
+        'database': {},
+        'chromadb': {}
+    }
+    
+    # Check environment variables
+    api_key = os.getenv('OPENAI_API_KEY')
+    health_status['environment'] = {
+        'OPENAI_API_KEY_set': bool(api_key),
+        'OPENAI_API_KEY_prefix': api_key[:7] + '...' if api_key else None,
+        'total_env_vars': len(os.environ),
+        'railway_vars': {k: v for k, v in os.environ.items() if k.startswith('RAILWAY_')},
+        'port': os.getenv('PORT', 'not set'),
+        'secret_key_set': bool(os.getenv('SECRET_KEY'))
+    }
+    
+    # Test OpenAI connection
+    try:
+        handler = get_chat_handler()
+        client = handler._get_openai_client()
+        if client:
+            # Try a simple API call
+            test_response = client.models.list()
+            health_status['openai'] = {
+                'status': 'connected',
+                'client_initialized': True,
+                'test_call': 'success'
+            }
+        else:
+            health_status['openai'] = {
+                'status': 'failed',
+                'client_initialized': False,
+                'error': 'Client could not be initialized'
+            }
+    except Exception as e:
+        health_status['openai'] = {
+            'status': 'error',
+            'error': str(e)
+        }
+    
+    # Check database
+    try:
+        conn = get_db_connection()
+        cursor = conn.execute('SELECT COUNT(*) FROM songs')
+        total_songs = cursor.fetchone()[0]
+        cursor = conn.execute('SELECT COUNT(*) FROM songs WHERE lyrics IS NOT NULL')
+        songs_with_lyrics = cursor.fetchone()[0]
+        conn.close()
+        
+        health_status['database'] = {
+            'status': 'connected',
+            'total_songs': total_songs,
+            'songs_with_lyrics': songs_with_lyrics
+        }
+    except Exception as e:
+        health_status['database'] = {
+            'status': 'error',
+            'error': str(e)
+        }
+    
+    # Check ChromaDB
+    try:
+        handler = get_chat_handler()
+        collection_count = handler.collection.count()
+        health_status['chromadb'] = {
+            'status': 'connected',
+            'collection_count': collection_count
+        }
+    except Exception as e:
+        health_status['chromadb'] = {
+            'status': 'error',
+            'error': str(e)
+        }
+    
+    # Overall status
+    if (health_status['openai'].get('status') == 'connected' and 
+        health_status['database'].get('status') == 'connected'):
+        health_status['status'] = 'healthy'
+    else:
+        health_status['status'] = 'unhealthy'
+    
+    return jsonify(health_status)
 
 @app.template_filter('format_views')
 def format_views(views):

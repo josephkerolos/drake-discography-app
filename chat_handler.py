@@ -8,26 +8,14 @@ from typing import List, Dict, Optional
 import json
 import tiktoken
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# OpenAI Configuration
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-if not OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY not set. Chat features will be disabled.")
-    # Initialize with None to handle gracefully
-    openai_client = None
-else:
-    try:
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        # Test the API key with a simple request
-        test_response = openai_client.models.list()
-        logger.info("OpenAI client initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenAI client: {e}")
-        openai_client = None
 
 # ChromaDB setup
 CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), 'chroma_db')
@@ -35,6 +23,10 @@ CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), 'chroma_db')
 class LyricsChatHandler:
     def __init__(self):
         """Initialize the chat handler with ChromaDB and OpenAI"""
+        # Lazy initialization for OpenAI client
+        self._openai_client = None
+        self._openai_initialized = False
+        
         self.client = chromadb.PersistentClient(
             path=CHROMA_PERSIST_DIR,
             settings=Settings(anonymized_telemetry=False)
@@ -70,14 +62,35 @@ Key instructions:
 
 Format your citations as: [Song Title - Artist] at the end of relevant sentences."""
 
+    def _get_openai_client(self):
+        """Get or initialize the OpenAI client lazily"""
+        if not self._openai_initialized:
+            self._openai_initialized = True
+            api_key = os.getenv('OPENAI_API_KEY')
+            
+            if not api_key:
+                logger.error("OPENAI_API_KEY not found in environment variables")
+                logger.error(f"Available env vars: {list(os.environ.keys())}")
+                self._openai_client = None
+            else:
+                try:
+                    self._openai_client = OpenAI(api_key=api_key)
+                    logger.info(f"OpenAI client initialized with key starting with: {api_key[:7]}...")
+                except Exception as e:
+                    logger.error(f"Failed to create OpenAI client: {e}")
+                    self._openai_client = None
+        
+        return self._openai_client
+    
     def get_embedding(self, text: str) -> List[float]:
         """Get embedding for a text using OpenAI"""
-        if not openai_client:
-            logger.error("OpenAI client not initialized. Check your API key.")
+        client = self._get_openai_client()
+        if not client:
+            logger.error("OpenAI client not available. Check your API key.")
             return None
             
         try:
-            response = openai_client.embeddings.create(
+            response = client.embeddings.create(
                 model="text-embedding-3-large",
                 input=text,
                 encoding_format="float"
@@ -165,13 +178,14 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 messages.append(msg)
         
         try:
-            if not openai_client:
+            client = self._get_openai_client()
+            if not client:
                 logger.error("OpenAI client not initialized")
                 return "Error: OpenAI API is not configured properly. Please check your API key."
                 
             # Try latest model first
             try:
-                response = openai_client.chat.completions.create(
+                response = client.chat.completions.create(
                     model="gpt-4-turbo-2024-04-09",  # Latest available GPT-4 model
                     messages=messages,
                     temperature=0.7,
@@ -182,7 +196,7 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 logger.warning(f"Failed with gpt-4-turbo: {e1}")
                 # Fallback to GPT-4o if newer model not available
                 try:
-                    response = openai_client.chat.completions.create(
+                    response = client.chat.completions.create(
                         model="gpt-4o",
                         messages=messages,
                         temperature=0.7,
@@ -192,7 +206,7 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 except Exception as e2:
                     logger.warning(f"Failed with gpt-4o: {e2}")
                     # Final fallback to GPT-3.5
-                    response = openai_client.chat.completions.create(
+                    response = client.chat.completions.create(
                         model="gpt-3.5-turbo",
                         messages=messages,
                         temperature=0.7,
