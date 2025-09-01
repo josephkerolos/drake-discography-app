@@ -64,18 +64,21 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
 
     def _get_openai_client(self):
         """Get or initialize the OpenAI client lazily"""
-        if not self._openai_initialized:
+        # Always check for the current API key to handle key changes
+        current_api_key = os.getenv('OPENAI_API_KEY')
+        
+        # Check if we need to reinitialize (key changed or first time)
+        if not self._openai_initialized or (self._openai_client and hasattr(self._openai_client, 'api_key') and self._openai_client.api_key != current_api_key):
             self._openai_initialized = True
-            api_key = os.getenv('OPENAI_API_KEY')
             
-            if not api_key:
+            if not current_api_key:
                 logger.error("OPENAI_API_KEY not found in environment variables")
                 logger.error(f"Available env vars: {list(os.environ.keys())}")
                 self._openai_client = None
             else:
                 try:
-                    self._openai_client = OpenAI(api_key=api_key)
-                    logger.info(f"OpenAI client initialized with key starting with: {api_key[:7]}...")
+                    self._openai_client = OpenAI(api_key=current_api_key)
+                    logger.info(f"OpenAI client initialized with key starting with: {current_api_key[:10]}...")
                 except Exception as e:
                     logger.error(f"Failed to create OpenAI client: {e}")
                     self._openai_client = None
@@ -272,6 +275,7 @@ chat_handler = None
 def get_chat_handler():
     """Get or create the chat handler instance"""
     global chat_handler
-    if chat_handler is None:
-        chat_handler = LyricsChatHandler()
+    # Always create a new handler to ensure fresh API key is used
+    # This is important for Railway deployments where env vars may change
+    chat_handler = LyricsChatHandler()
     return chat_handler
