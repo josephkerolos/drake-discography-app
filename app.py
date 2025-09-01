@@ -2,6 +2,11 @@ from flask import Flask, render_template, request, jsonify
 import sqlite3
 import os
 from math import ceil
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+import time
+import re
 
 app = Flask(__name__)
 app.config['DATABASE'] = 'drake_discography.db'
@@ -98,6 +103,91 @@ def api_stats():
         'top_songs': [dict(song) for song in top_songs],
         'top_collaborators': [dict(collab) for collab in top_collaborators]
     })
+
+@app.route('/api/lyrics/<int:song_id>')
+def fetch_lyrics(song_id):
+    conn = get_db_connection()
+    
+    # Check if lyrics already exist
+    song = conn.execute('SELECT * FROM songs WHERE id = ?', (song_id,)).fetchone()
+    
+    if not song:
+        conn.close()
+        return jsonify({'error': 'Song not found'}), 404
+    
+    # Return cached lyrics if available
+    if song['lyrics']:
+        conn.close()
+        return jsonify({
+            'lyrics': song['lyrics'],
+            'title': song['title'],
+            'artist': song['artist'],
+            'cached': True
+        })
+    
+    # Fetch lyrics from Genius
+    if not song['url']:
+        conn.close()
+        return jsonify({'error': 'No URL available for this song'}), 400
+    
+    try:
+        # Add delay to be respectful to Genius servers
+        time.sleep(1)
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(song['url'], headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'lxml')
+        
+        # Find lyrics container
+        lyrics_divs = soup.find_all('div', {'data-lyrics-container': 'true'})
+        
+        if not lyrics_divs:
+            conn.close()
+            return jsonify({'error': 'Lyrics not found on page'}), 404
+        
+        # Extract lyrics text
+        lyrics_parts = []
+        for div in lyrics_divs:
+            # Get text with line breaks preserved
+            for br in div.find_all('br'):
+                br.replace_with('\n')
+            text = div.get_text(separator='\n')
+            lyrics_parts.append(text)
+        
+        lyrics = '\n\n'.join(lyrics_parts)
+        
+        # Clean up lyrics
+        lyrics = re.sub(r'\n{3,}', '\n\n', lyrics)  # Remove excessive line breaks
+        lyrics = lyrics.strip()
+        
+        # Save to database
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE songs 
+            SET lyrics = ?, lyrics_fetched_at = ? 
+            WHERE id = ?
+        ''', (lyrics, datetime.now(), song_id))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'lyrics': lyrics,
+            'title': song['title'],
+            'artist': song['artist'],
+            'cached': False
+        })
+        
+    except requests.RequestException as e:
+        conn.close()
+        return jsonify({'error': f'Failed to fetch lyrics: {str(e)}'}), 500
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': f'Error parsing lyrics: {str(e)}'}), 500
 
 @app.template_filter('format_views')
 def format_views(views):
