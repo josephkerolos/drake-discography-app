@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session
 import sqlite3
 import os
 from math import ceil
@@ -7,9 +7,12 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import time
 import re
+import secrets
+from chat_handler import get_chat_handler
 
 app = Flask(__name__)
 app.config['DATABASE'] = 'drake_discography.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
 def get_db_connection():
     conn = sqlite3.connect(app.config['DATABASE'])
@@ -188,6 +191,58 @@ def fetch_lyrics(song_id):
     except Exception as e:
         conn.close()
         return jsonify({'error': f'Error parsing lyrics: {str(e)}'}), 500
+
+@app.route('/chat')
+def chat_page():
+    return render_template('chat.html')
+
+@app.route('/api/chat', methods=['POST'])
+def chat_api():
+    try:
+        data = request.json
+        query = data.get('query', '')
+        conversation_history = data.get('history', [])
+        
+        if not query:
+            return jsonify({'error': 'No query provided'}), 400
+        
+        # Get or create chat handler
+        handler = get_chat_handler()
+        
+        # Process the chat
+        result = handler.chat(query, conversation_history)
+        
+        if 'error' in result:
+            return jsonify(result), 500
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/chat/suggestions')
+def chat_suggestions():
+    handler = get_chat_handler()
+    return jsonify({'suggestions': handler.get_suggestions()})
+
+@app.route('/api/vectorize/status')
+def vectorize_status():
+    try:
+        handler = get_chat_handler()
+        collection_count = handler.collection.count()
+        
+        conn = get_db_connection()
+        cursor = conn.execute('SELECT COUNT(*) FROM songs WHERE lyrics IS NOT NULL')
+        songs_with_lyrics = cursor.fetchone()[0]
+        conn.close()
+        
+        return jsonify({
+            'vectorized_chunks': collection_count,
+            'songs_with_lyrics': songs_with_lyrics,
+            'status': 'ready' if collection_count > 0 else 'needs_vectorization'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'status': 'error'}), 500
 
 @app.template_filter('format_views')
 def format_views(views):

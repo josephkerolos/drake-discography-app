@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drake AI Chat - Ask About Drake's Lyrics</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .chat-container {
+            max-width: 900px;
+            margin: 30px auto;
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            height: calc(100vh - 60px);
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 20px 20px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9rem;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #4ade80;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .message {
+            display: flex;
+            gap: 10px;
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message-user {
+            flex-direction: row-reverse;
+        }
+        .message-avatar {
+            width: 35px;
+            height: 35px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            color: white;
+            flex-shrink: 0;
+        }
+        .user-avatar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .ai-avatar {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 15px;
+            word-wrap: break-word;
+        }
+        .message-user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+        .message-ai .message-content {
+            background: #f3f4f6;
+            color: #333;
+            border-bottom-left-radius: 5px;
+        }
+        .citation-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+        .citation-title {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+        .citation-link {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 0.85rem;
+        }
+        .citation-link:hover {
+            text-decoration: underline;
+        }
+        .chat-input-container {
+            padding: 20px;
+            border-top: 1px solid #e5e7eb;
+            background: white;
+            border-radius: 0 0 20px 20px;
+        }
+        .chat-input-wrapper {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        .chat-input {
+            flex: 1;
+            border: 2px solid #e5e7eb;
+            border-radius: 25px;
+            padding: 12px 20px;
+            resize: none;
+            max-height: 120px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        .chat-input:focus {
+            border-color: #667eea;
+        }
+        .send-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .send-button:hover {
+            transform: scale(1.1);
+        }
+        .send-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .suggestion-chip {
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .suggestion-chip:hover {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            transform: translateY(-2px);
+        }
+        .typing-indicator {
+            display: none;
+            align-items: center;
+            gap: 5px;
+            padding: 10px;
+        }
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #999;
+            animation: typing 1.4s infinite;
+        }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-10px); }
+        }
+        .back-link {
+            color: white;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .back-link:hover {
+            color: rgba(255, 255, 255, 0.9);
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <div>
+                <div class="chat-title">
+                    <i class="fas fa-robot"></i> Drake Lyrics AI Chat
+                </div>
+                <div style="font-size: 0.85rem; opacity: 0.9; margin-top: 5px;">
+                    Powered by GPT-4o • Ask anything about Drake's lyrics
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span id="statusText">Ready</span>
+                </div>
+                <a href="/" class="back-link">
+                    <i class="fas fa-arrow-left"></i> Back
+                </a>
+            </div>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="message message-ai">
+                <div class="message-avatar ai-avatar">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <div class="message-content">
+                    <p>👋 Hey! I'm your Drake lyrics expert. I can help you explore themes, find specific references, or analyze Drake's artistic evolution.</p>
+                    <p>Try asking me about:</p>
+                    <ul style="margin-bottom: 0;">
+                        <li>References to specific people or places</li>
+                        <li>Recurring themes across albums</li>
+                        <li>Evolution of his style over time</li>
+                        <li>Comparisons between different songs</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <div class="typing-indicator" id="typingIndicator">
+            <div class="message-avatar ai-avatar">
+                <i class="fas fa-robot"></i>
+            </div>
+            <div class="message-content" style="background: #f3f4f6;">
+                <div style="display: flex; gap: 5px;">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <div class="suggestions" id="suggestions"></div>
+            <div class="chat-input-wrapper">
+                <textarea 
+                    class="chat-input" 
+                    id="chatInput" 
+                    placeholder="Ask about Drake's lyrics..."
+                    rows="1"
+                ></textarea>
+                <button class="send-button" id="sendButton">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let conversationHistory = [];
+        let isProcessing = false;
+
+        // Load suggestions
+        async function loadSuggestions() {
+            try {
+                const response = await fetch('/api/chat/suggestions');
+                const data = await response.json();
+                const container = document.getElementById('suggestions');
+                
+                // Show first 5 suggestions
+                data.suggestions.slice(0, 5).forEach(suggestion => {
+                    const chip = document.createElement('div');
+                    chip.className = 'suggestion-chip';
+                    chip.textContent = suggestion;
+                    chip.onclick = () => sendMessage(suggestion);
+                    container.appendChild(chip);
+                });
+            } catch (error) {
+                console.error('Failed to load suggestions:', error);
+            }
+        }
+
+        // Check vectorization status
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/vectorize/status');
+                const data = await response.json();
+                const statusText = document.getElementById('statusText');
+                
+                if (data.status === 'ready') {
+                    statusText.textContent = `Ready (${data.vectorized_chunks} chunks)`;
+                } else {
+                    statusText.textContent = 'Initializing...';
+                }
+            } catch (error) {
+                console.error('Status check failed:', error);
+            }
+        }
+
+        // Send message
+        async function sendMessage(text = null) {
+            const input = document.getElementById('chatInput');
+            const query = text || input.value.trim();
+            
+            if (!query || isProcessing) return;
+            
+            isProcessing = true;
+            input.value = '';
+            input.style.height = 'auto';
+            
+            // Add user message
+            addMessage(query, 'user');
+            
+            // Show typing indicator
+            const typingIndicator = document.getElementById('typingIndicator');
+            typingIndicator.style.display = 'flex';
+            
+            // Hide suggestions after first message
+            document.getElementById('suggestions').style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: query,
+                        history: conversationHistory.slice(-4)
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    addMessage(`Error: ${data.error}`, 'ai');
+                } else {
+                    addMessage(data.response, 'ai', data.citations);
+                    
+                    // Update conversation history
+                    conversationHistory.push(
+                        { role: 'user', content: query },
+                        { role: 'assistant', content: data.response }
+                    );
+                }
+            } catch (error) {
+                addMessage('Sorry, something went wrong. Please try again.', 'ai');
+            } finally {
+                typingIndicator.style.display = 'none';
+                isProcessing = false;
+            }
+        }
+
+        // Add message to chat
+        function addMessage(text, sender, citations = null) {
+            const messages = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message message-${sender}`;
+            
+            const avatar = document.createElement('div');
+            avatar.className = `message-avatar ${sender}-avatar`;
+            avatar.innerHTML = sender === 'user' ? 
+                '<i class="fas fa-user"></i>' : 
+                '<i class="fas fa-robot"></i>';
+            
+            const content = document.createElement('div');
+            content.className = 'message-content';
+            
+            // Format the message text
+            const formattedText = text
+                .replace(/\[([^\]]+)\]/g, '<strong>[$1]</strong>')
+                .replace(/\n/g, '<br>');
+            content.innerHTML = formattedText;
+            
+            // Add citations if provided
+            if (citations && citations.length > 0) {
+                const citationsDiv = document.createElement('div');
+                citationsDiv.style.marginTop = '15px';
+                citationsDiv.innerHTML = '<small style="opacity: 0.7;">Sources:</small>';
+                
+                citations.forEach(citation => {
+                    const card = document.createElement('div');
+                    card.className = 'citation-card';
+                    card.innerHTML = `
+                        <div class="citation-title">${citation.title} - ${citation.artist}</div>
+                        <small style="opacity: 0.7;">Lines ${citation.lines}</small>
+                        ${citation.url ? `<br><a href="${citation.url}" target="_blank" class="citation-link">View on Genius →</a>` : ''}
+                    `;
+                    citationsDiv.appendChild(card);
+                });
+                
+                content.appendChild(citationsDiv);
+            }
+            
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(content);
+            messages.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // Auto-resize textarea
+        document.getElementById('chatInput').addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        });
+
+        // Enter key handling
+        document.getElementById('chatInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Send button click
+        document.getElementById('sendButton').addEventListener('click', () => sendMessage());
+
+        // Initialize
+        loadSuggestions();
+        checkStatus();
+        setInterval(checkStatus, 30000); // Check status every 30 seconds
+    </script>
+</body>
+</html>
