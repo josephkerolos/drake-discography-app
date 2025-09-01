@@ -247,20 +247,17 @@ Remember: You can ONLY discuss lyrics that are in the provided context. Do not u
             n_results=n_results
         )
         
-        # Format and filter results
+        # Format results (removed broken distance filter)
         formatted_results = []
         seen_songs = set()
+        all_distances = []
         
         for doc, metadata, distance in zip(
             results['documents'][0], 
             results['metadatas'][0],
             results['distances'][0]
         ):
-            # Filter out poor matches (distance > 0.7 is typically not relevant)
-            if distance > 0.7:
-                logger.debug(f"Filtering out result with distance {distance}: {metadata['title']}")
-                continue
-                
+            all_distances.append(distance)
             song_key = f"{metadata['title']}-{metadata['artist']}"
             
             formatted_results.append({
@@ -278,9 +275,16 @@ Remember: You can ONLY discuss lyrics that are in the provided context. Do not u
         # Sort by relevance (lower distance = more relevant)
         formatted_results.sort(key=lambda x: x['distance'])
         
-        logger.info(f"Found {len(formatted_results)} relevant results for query: {query[:50]}...")
+        # Log distance information for debugging
+        if all_distances:
+            logger.info(f"Query distances - Min: {min(all_distances):.2f}, Max: {max(all_distances):.2f}, Avg: {sum(all_distances)/len(all_distances):.2f}")
+        
+        logger.info(f"Found {len(formatted_results)} results for query: {query[:50]}...")
         if formatted_results:
-            logger.info(f"Best match: {formatted_results[0]['song']} (distance: {formatted_results[0]['distance']:.3f})")
+            logger.info(f"Best match: {formatted_results[0]['song']} (distance: {formatted_results[0]['distance']:.2f})")
+            # Log top 3 matches for debugging
+            for i, result in enumerate(formatted_results[:3]):
+                logger.debug(f"Match {i+1}: {result['song']} - Lines {result['lines']} (distance: {result['distance']:.2f})")
         
         return formatted_results
 
@@ -339,7 +343,7 @@ Remember: You can ONLY discuss lyrics that are in the provided context. Do not u
                     response = client.chat.completions.create(
                         model="gpt-5-2025-08-07",  # GPT-5 as requested
                         messages=messages,
-                        temperature=0.7,
+                        # temperature=1 is default for GPT-5, removed explicit setting
                         max_completion_tokens=1500,  # GPT-5 uses max_completion_tokens
                         stream=False
                     )
