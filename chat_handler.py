@@ -5,16 +5,21 @@ import httpx
 import chromadb
 from chromadb.config import Settings
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import json
 import tiktoken
 import logging
 from dotenv import load_dotenv
 import time
 import random
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
+
+# Disable ChromaDB telemetry completely
+os.environ['ANONYMIZED_TELEMETRY'] = 'false'
+os.environ['CHROMA_TELEMETRY'] = 'false'
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -30,9 +35,17 @@ class LyricsChatHandler:
         self._openai_client = None
         self._openai_initialized = False
         
+        # Simple embedding cache (query -> (embedding, timestamp))
+        self._embedding_cache = {}
+        self._cache_ttl = timedelta(minutes=5)
+        
         self.client = chromadb.PersistentClient(
             path=CHROMA_PERSIST_DIR,
-            settings=Settings(anonymized_telemetry=False)
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=False,
+                is_persistent=True
+            )
         )
         
         # Try to get or create collection
@@ -55,15 +68,20 @@ class LyricsChatHandler:
         self.system_prompt = """You are an expert on Drake's discography with access to a comprehensive database of his lyrics. 
 Your role is to answer questions about Drake's music, themes, lyrics, and artistic evolution based ONLY on the lyrics provided to you.
 
-Key instructions:
-1. Always cite specific songs when referencing lyrics
-2. Use exact quotes when possible, but be careful not to reproduce entire songs
-3. Focus on analysis, themes, and insights rather than just repeating lyrics
-4. If asked about something not in the provided context, say you don't have that information
-5. Be concise but thorough in your analysis
-6. When multiple songs address the same theme, compare and contrast them
+CRITICAL INSTRUCTIONS:
+1. ACCURACY IS PARAMOUNT - Only cite lyrics that are EXACTLY in the provided context
+2. Always cite specific songs with exact titles when referencing lyrics
+3. Use direct quotes from the provided lyrics, marking them with quotation marks
+4. If the provided context doesn't contain relevant information, clearly state: "I don't have lyrics about that topic in the provided context"
+5. Focus on themes and patterns across multiple songs when available
+6. Be specific about which lines or verses you're referring to
+7. Never make up or paraphrase lyrics - use only what's provided
+8. When analyzing themes, reference multiple songs if applicable
 
-Format your citations as: [Song Title - Artist] at the end of relevant sentences."""
+Format your citations as: [Song Title - Artist] at the end of relevant sentences.
+Always indicate line numbers when available (e.g., "Lines 5-7").
+
+Remember: You can ONLY discuss lyrics that are in the provided context. Do not use general knowledge about Drake's music."""
 
     def _get_openai_client(self):
         """Get or initialize the OpenAI client with Railway-optimized settings"""
@@ -156,7 +174,18 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
         return self._openai_client
     
     def get_embedding(self, text: str) -> List[float]:
-        """Get embedding for a text using OpenAI with retry logic"""
+        """Get embedding for a text using OpenAI with retry logic and caching"""
+        # Check cache first
+        now = datetime.now()
+        if text in self._embedding_cache:
+            embedding, timestamp = self._embedding_cache[text]
+            if now - timestamp < self._cache_ttl:
+                logger.debug(f"Using cached embedding for query: {text[:50]}...")
+                return embedding
+            else:
+                # Remove expired cache entry
+                del self._embedding_cache[text]
+        
         client = self._get_openai_client()
         if not client:
             logger.error("OpenAI client not available after retries")
@@ -172,7 +201,19 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                     input=text,
                     encoding_format="float"
                 )
-                return response.data[0].embedding
+                embedding = response.data[0].embedding
+                
+                # Cache the embedding
+                self._embedding_cache[text] = (embedding, now)
+                
+                # Clean old cache entries if cache gets too large
+                if len(self._embedding_cache) > 100:
+                    # Remove oldest entries
+                    sorted_cache = sorted(self._embedding_cache.items(), key=lambda x: x[1][1])
+                    for key, _ in sorted_cache[:20]:  # Remove 20 oldest
+                        del self._embedding_cache[key]
+                
+                return embedding
                 
             except httpx.TimeoutException as e:
                 logger.warning(f"Embedding timeout (attempt {attempt + 1}/{max_retries}): {e}")
@@ -191,7 +232,7 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 else:
                     return None
 
-    def search_lyrics(self, query: str, n_results: int = 10) -> Dict:
+    def search_lyrics(self, query: str, n_results: int = 20) -> Dict:
         """Search for relevant lyrics chunks using semantic similarity"""
         query_embedding = self.get_embedding(query)
         
@@ -206,7 +247,7 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
             n_results=n_results
         )
         
-        # Format results
+        # Format and filter results
         formatted_results = []
         seen_songs = set()
         
@@ -215,6 +256,11 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
             results['metadatas'][0],
             results['distances'][0]
         ):
+            # Filter out poor matches (distance > 0.7 is typically not relevant)
+            if distance > 0.7:
+                logger.debug(f"Filtering out result with distance {distance}: {metadata['title']}")
+                continue
+                
             song_key = f"{metadata['title']}-{metadata['artist']}"
             
             formatted_results.append({
@@ -228,6 +274,13 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 'is_duplicate': song_key in seen_songs
             })
             seen_songs.add(song_key)
+        
+        # Sort by relevance (lower distance = more relevant)
+        formatted_results.sort(key=lambda x: x['distance'])
+        
+        logger.info(f"Found {len(formatted_results)} relevant results for query: {query[:50]}...")
+        if formatted_results:
+            logger.info(f"Best match: {formatted_results[0]['song']} (distance: {formatted_results[0]['distance']:.3f})")
         
         return formatted_results
 
@@ -243,7 +296,7 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                     f"[{result['song']} - Lines {result['lines']}]:\n{result['text']}"
                 )
         
-        context_str = "\n\n---\n\n".join(context_parts[:8])  # Limit to top 8 unique songs
+        context_str = "\n\n---\n\n".join(context_parts[:12])  # Increased to top 12 unique songs for better context
         
         # Count tokens to ensure we stay within limits
         try:
@@ -281,41 +334,44 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
         
         for attempt in range(max_retries):
             try:
-                # Try latest model first
+                # Try GPT-5 model as requested
                 try:
                     response = client.chat.completions.create(
-                        model="gpt-4-turbo-2024-04-09",  # Latest available GPT-4 model
+                        model="gpt-5-2025-08-07",  # GPT-5 as requested
                         messages=messages,
                         temperature=0.7,
-                        max_tokens=1000,
+                        max_completion_tokens=1500,  # GPT-5 uses max_completion_tokens
                         stream=False
                     )
+                    logger.info("Using model: gpt-5-2025-08-07")
                     return response.choices[0].message.content
                     
                 except Exception as e1:
                     if attempt == 0:  # Only try fallback models on first attempt
-                        logger.warning(f"Failed with gpt-4-turbo: {e1}")
-                        # Fallback to GPT-4o if newer model not available
+                        logger.warning(f"Failed with gpt-5-2025-08-07: {e1}")
+                        # Fallback to GPT-4o if GPT-5 not available
                         try:
                             response = client.chat.completions.create(
                                 model="gpt-4o",
                                 messages=messages,
                                 temperature=0.7,
-                                max_tokens=1000,
+                                max_tokens=1500,
                                 stream=False
                             )
+                            logger.info("Using fallback model: gpt-4o")
                             return response.choices[0].message.content
                             
                         except Exception as e2:
                             logger.warning(f"Failed with gpt-4o: {e2}")
-                            # Final fallback to GPT-3.5
+                            # Final fallback
                             response = client.chat.completions.create(
                                 model="gpt-3.5-turbo",
                                 messages=messages,
                                 temperature=0.7,
-                                max_tokens=1000,
+                                max_tokens=1500,
                                 stream=False
                             )
+                            logger.info("Using fallback model: gpt-3.5-turbo")
                             return response.choices[0].message.content
                     else:
                         raise  # Re-raise to trigger retry logic
@@ -404,7 +460,9 @@ chat_handler = None
 def get_chat_handler():
     """Get or create the chat handler instance"""
     global chat_handler
-    # Always create a new handler to ensure fresh API key is used
-    # This is important for Railway deployments where env vars may change
-    chat_handler = LyricsChatHandler()
+    # Only create new handler if it doesn't exist or if OpenAI client failed
+    # This prevents constant ChromaDB reinitialization while still allowing retry
+    if chat_handler is None or (hasattr(chat_handler, '_openai_client') and chat_handler._openai_client is None):
+        logger.info("Creating new chat handler instance")
+        chat_handler = LyricsChatHandler()
     return chat_handler
