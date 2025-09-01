@@ -11,7 +11,8 @@ import tiktoken
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY environment variable must be set")
+    print("Warning: OPENAI_API_KEY not set. Chat features will be disabled.")
+    OPENAI_API_KEY = "dummy_key_for_initialization"
 openai.api_key = OPENAI_API_KEY
 
 # ChromaDB setup
@@ -24,8 +25,22 @@ class LyricsChatHandler:
             path=CHROMA_PERSIST_DIR,
             settings=Settings(anonymized_telemetry=False)
         )
-        self.collection = self.client.get_collection("drake_lyrics")
-        self.encoder = tiktoken.encoding_for_model("gpt-4o")
+        
+        # Try to get or create collection
+        try:
+            self.collection = self.client.get_collection("drake_lyrics")
+        except:
+            # Create collection if it doesn't exist
+            self.collection = self.client.create_collection(
+                name="drake_lyrics",
+                metadata={"description": "Drake discography lyrics embeddings"}
+            )
+        
+        # Initialize encoder with fallback
+        try:
+            self.encoder = tiktoken.encoding_for_model("gpt-4o")
+        except:
+            self.encoder = tiktoken.get_encoding("cl100k_base")
         
         # System prompt for the AI
         self.system_prompt = """You are an expert on Drake's discography with access to a comprehensive database of his lyrics. 
@@ -93,7 +108,7 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
 
     def generate_response(self, query: str, context: List[Dict], 
                          conversation_history: Optional[List[Dict]] = None) -> str:
-        """Generate a response using GPT-4o with the retrieved context"""
+        """Generate a response using latest GPT model with the retrieved context"""
         
         # Build context string
         context_parts = []
@@ -106,11 +121,17 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
         context_str = "\n\n---\n\n".join(context_parts[:8])  # Limit to top 8 unique songs
         
         # Count tokens to ensure we stay within limits
-        context_tokens = len(self.encoder.encode(context_str))
-        if context_tokens > 3000:
-            # Truncate context if too long
-            context_parts = context_parts[:5]
-            context_str = "\n\n---\n\n".join(context_parts)
+        try:
+            context_tokens = len(self.encoder.encode(context_str))
+            if context_tokens > 3000:
+                # Truncate context if too long
+                context_parts = context_parts[:5]
+                context_str = "\n\n---\n\n".join(context_parts)
+        except:
+            # If encoder fails, use character count estimate
+            if len(context_str) > 12000:
+                context_parts = context_parts[:5]
+                context_str = "\n\n---\n\n".join(context_parts)
         
         # Build messages
         messages = [
@@ -124,17 +145,39 @@ Format your citations as: [Song Title - Artist] at the end of relevant sentences
                 messages.append(msg)
         
         try:
-            response = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=1000,
-                stream=False
-            )
+            # Try latest model first
+            try:
+                response = openai.chat.completions.create(
+                    model="gpt-4-turbo-2024-04-09",  # Latest available GPT-4 model
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=1000,
+                    stream=False
+                )
+            except:
+                # Fallback to GPT-4o if newer model not available
+                response = openai.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=1000,
+                    stream=False
+                )
             
             return response.choices[0].message.content
         except Exception as e:
-            return f"Error generating response: {str(e)}"
+            # Final fallback to GPT-3.5
+            try:
+                response = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=1000,
+                    stream=False
+                )
+                return response.choices[0].message.content
+            except Exception as fallback_error:
+                return f"Error generating response: {str(e)}"
 
     def chat(self, query: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
         """Main chat function that orchestrates search and response generation"""
