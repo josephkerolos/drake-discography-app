@@ -15,4 +15,4 @@ instance/
 .coverage
 htmlcov/
 .pytest_cache/
-.mypy_cache/
+.mypy_cache/chroma_db/
